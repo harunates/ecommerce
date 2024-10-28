@@ -1,0 +1,180 @@
+services:
+
+  # MySQL Config for product service
+  mysql-product:
+    container_name: mysql-product
+    image: mysql:latest
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: products
+      MYSQL_USER: db_user
+      MYSQL_PASSWORD: db_password
+    volumes:
+      - ./mysql_product:/var/lib/mysql
+    ports:
+      - "3310:3306"
+    restart: no
+
+  # MySQL Config for order service
+  mysql-order:
+    container_name: mysql-order
+    image: mysql:latest
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: orders
+      MYSQL_USER: db_user
+      MYSQL_PASSWORD: db_password
+    volumes:
+      - ./mysql_order:/var/lib/mysql
+    ports:
+      - "3311:3306"
+    restart: no
+
+  # Apache Kafka (Zookeeper) Config
+  zookeeper:
+    image: confluentinc/cp-zookeeper:latest
+    container_name: zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  # Apache Kafka (Broker) Config
+  broker:
+    image: confluentinc/cp-kafka:latest
+    container_name: broker
+    ports:
+      - "9092:9092"
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://broker:29092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+
+
+  # Zipkin Config
+  zipkin:
+    image: openzipkin/zipkin
+    container_name: zipkin
+    ports:
+      - "9411:9411"
+
+  # Discovery Server (Eureka Server) Config
+  discovery-server:
+    image: harunates/discovery-server:latest
+    container_name: discovery-server
+    pull_policy: always
+    ports:
+      - "8761:8761"
+    environment:
+      - SERVER_PORT=8761
+      - MANAGEMENT_ZIPKIN_TRACING_ENDPOINT=http://zipkin:9411/api/v2/spans
+    depends_on:
+      - zipkin
+
+  # API Gateway Service Config
+  api-gateway:
+    image: harunates/api-gateway:latest
+    container_name: api-gateway
+    pull_policy: always
+    ports:
+      - "8181:8080"
+    expose:
+      - "8181"
+    environment:
+      - LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_SECURITY=TRACE
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-server:8761/eureka
+      - SERVER_PORT=8080
+      - MANAGEMENT_ZIPKIN_TRACING_ENDPOINT=http://zipkin:9411/api/v2/spans
+    depends_on:
+      - zipkin
+      - discovery-server
+
+  # Product Service Config
+  product-service:
+    container_name: product-service
+    image: harunates/product-service:latest
+    pull_policy: always
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:mysql://mysql-product:3306/products?allowPublicKeyRetrieval=true&useSSL=false
+      - SPRING_DATASOURCE_USERNAME=db_user
+      - SPRING_DATASOURCE_PASSWORD=db_password
+      - SERVER_PORT=8080
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-server:8761/eureka/
+      - MANAGEMENT_ZIPKIN_TRACING_ENDPOINT=http://zipkin:9411/api/v2/spans
+    depends_on:
+      - mysql-product
+      - zipkin
+      - discovery-server
+      - api-gateway
+
+  # Order Service Config
+  order-service:
+    container_name: order-service
+    image: harunates/order-service:latest
+    pull_policy: always
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:mysql://mysql-order:3306/orders?allowPublicKeyRetrieval=true&useSSL=false
+      - SPRING_DATASOURCE_USERNAME=db_user
+      - SPRING_DATASOURCE_PASSWORD=db_password
+      - SERVER_PORT=8080
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-server:8761/eureka/
+      - MANAGEMENT_ZIPKIN_TRACING_ENDPOINT=http://zipkin:9411/api/v2/spans
+      - SPRING_KAFKA_BOOTSTRAPSERVERS=broker:29092
+    depends_on:
+      - mysql-order
+      - broker
+      - zipkin
+      - discovery-server
+      - api-gateway
+
+  # Notification Service Config
+  notification-service:
+    container_name: notification-service
+    image: harunates/notification-service:latest
+    pull_policy: always
+    environment:
+      - SERVER_PORT=8080
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-server:8761/eureka
+      - MANAGEMENT_ZIPKIN_TRACING_ENDPOINT=http://zipkin:9411/api/v2/spans
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=broker:29092
+    depends_on:
+      - broker
+      - zipkin
+      - discovery-server
+      - api-gateway
+
+  # Prometheus Config
+  prometheus:
+    container_name: prometheus
+    image: prom/prometheus:latest
+    restart: no
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    depends_on:
+      - product-service
+      - order-service
+      - notification-service
+
+  # Grafana Config
+  grafana:
+    container_name: grafana
+    image: grafana/grafana-oss:latest
+    restart: no
+    ports:
+      - "3000:3000"
+    links:
+      - prometheus:prometheus
+    volumes:
+      - ./grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
